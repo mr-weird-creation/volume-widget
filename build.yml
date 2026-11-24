@@ -1,0 +1,564 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Accept Android licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Write project files
+        run: |
+          mkdir -p "vwproj/$(dirname app/src/main/java/com/example/volumewidget/VolumeStreams.kt)"
+          cat > vwproj/app/src/main/java/com/example/volumewidget/VolumeStreams.kt <<'VWEOF'
+          package com.example.volumewidget
+
+          import android.content.Context
+          import android.media.AudioManager
+
+          data class VolStream(val id: Int, val label: String, val icon: Int)
+
+          object VolumeStreams {
+              val all = listOf(
+                  VolStream(AudioManager.STREAM_MUSIC, "মিডিয়া", R.drawable.ic_music),
+                  VolStream(AudioManager.STREAM_RING, "রিংটোন", R.drawable.ic_ring),
+                  VolStream(AudioManager.STREAM_NOTIFICATION, "নোটিফিকেশন", R.drawable.ic_bell),
+                  VolStream(AudioManager.STREAM_SYSTEM, "সিস্টেম", R.drawable.ic_system),
+                  VolStream(AudioManager.STREAM_VOICE_CALL, "কল", R.drawable.ic_call),
+                  VolStream(AudioManager.STREAM_ALARM, "অ্যালার্ম", R.drawable.ic_alarm),
+              )
+
+              private fun audio(c: Context) = c.getSystemService(AudioManager::class.java)
+
+              fun min(c: Context, s: VolStream) = audio(c).getStreamMinVolume(s.id)
+              fun max(c: Context, s: VolStream) = audio(c).getStreamMaxVolume(s.id)
+              fun get(c: Context, s: VolStream) = audio(c).getStreamVolume(s.id)
+
+              /** false হলে সিস্টেম বদলাতে দেয়নি (যেমন Do Not Disturb চালু) */
+              fun set(c: Context, s: VolStream, v: Int): Boolean = try {
+                  audio(c).setStreamVolume(s.id, v.coerceIn(min(c, s), max(c, s)), 0)
+                  true
+              } catch (e: SecurityException) {
+                  false
+              }
+          }
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/java/com/example/volumewidget/VolumeWidgetProvider.kt)"
+          cat > vwproj/app/src/main/java/com/example/volumewidget/VolumeWidgetProvider.kt <<'VWEOF'
+          package com.example.volumewidget
+
+          import android.app.PendingIntent
+          import android.appwidget.AppWidgetManager
+          import android.appwidget.AppWidgetProvider
+          import android.content.Context
+          import android.content.Intent
+          import android.widget.RemoteViews
+
+          class VolumeWidgetProvider : AppWidgetProvider() {
+
+              override fun onUpdate(context: Context, manager: AppWidgetManager, appWidgetIds: IntArray) {
+                  val iconIds = intArrayOf(
+                      R.id.icon0, R.id.icon1, R.id.icon2, R.id.icon3, R.id.icon4, R.id.icon5
+                  )
+                  val views = RemoteViews(context.packageName, R.layout.widget_volume)
+                  iconIds.forEachIndexed { i, viewId ->
+                      val intent = Intent(context, VolumePopupActivity::class.java)
+                          .putExtra(VolumePopupActivity.EXTRA_INDEX, i)
+                          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                      val pending = PendingIntent.getActivity(
+                          context, i, intent,
+                          PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                      )
+                      views.setOnClickPendingIntent(viewId, pending)
+                  }
+                  appWidgetIds.forEach { manager.updateAppWidget(it, views) }
+              }
+          }
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/java/com/example/volumewidget/VolumePopupActivity.kt)"
+          cat > vwproj/app/src/main/java/com/example/volumewidget/VolumePopupActivity.kt <<'VWEOF'
+          package com.example.volumewidget
+
+          import android.app.Activity
+          import android.content.res.ColorStateList
+          import android.graphics.Color
+          import android.graphics.drawable.GradientDrawable
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.view.Gravity
+          import android.view.ViewGroup
+          import android.widget.FrameLayout
+          import android.widget.ImageView
+          import android.widget.LinearLayout
+          import android.widget.SeekBar
+          import android.widget.TextView
+          import android.widget.Toast
+
+          class VolumePopupActivity : Activity() {
+
+              companion object {
+                  const val EXTRA_INDEX = "index"
+                  private const val AUTO_CLOSE_MS = 3000L
+              }
+
+              private val handler = Handler(Looper.getMainLooper())
+              private val closeTask = Runnable { finish() }
+              private val teal = Color.parseColor("#00897B")
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val index = intent.getIntExtra(EXTRA_INDEX, 0).coerceIn(0, VolumeStreams.all.lastIndex)
+                  val stream = VolumeStreams.all[index]
+                  val lo = VolumeStreams.min(this, stream)
+                  val hi = VolumeStreams.max(this, stream)
+
+                  val value = TextView(this).apply {
+                      setTextColor(teal)
+                      textSize = 15f
+                      gravity = Gravity.CENTER
+                      minWidth = dp(28)
+                  }
+                  val bar = SeekBar(this).apply {
+                      this.max = hi - lo
+                      progress = VolumeStreams.get(this@VolumePopupActivity, stream) - lo
+                      progressTintList = ColorStateList.valueOf(teal)
+                      thumbTintList = ColorStateList.valueOf(teal)
+                      progressBackgroundTintList = ColorStateList.valueOf(Color.argb(70, 0, 137, 123))
+                  }
+
+                  fun show() {
+                      value.text = (bar.progress + lo).toString()
+                  }
+
+                  fun setLevel(level: Int) {
+                      if (!VolumeStreams.set(this, stream, level)) {
+                          Toast.makeText(this, "Do Not Disturb বন্ধ করুন বা অনুমতি দিন", Toast.LENGTH_SHORT).show()
+                      }
+                      bar.progress = VolumeStreams.get(this, stream) - lo
+                      show()
+                      handler.removeCallbacks(closeTask)
+                      handler.postDelayed(closeTask, AUTO_CLOSE_MS)
+                  }
+
+                  bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                      override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
+                          if (fromUser) setLevel(p + lo)
+                      }
+                      override fun onStartTrackingTouch(sb: SeekBar) {}
+                      override fun onStopTrackingTouch(sb: SeekBar) {}
+                  })
+
+                  fun roundButton(label: String, delta: Int) = TextView(this).apply {
+                      text = label
+                      textSize = 22f
+                      setTextColor(teal)
+                      gravity = Gravity.CENTER
+                      background = GradientDrawable().apply {
+                          shape = GradientDrawable.OVAL
+                          setColor(Color.argb(45, 0, 137, 123))
+                      }
+                      layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+                      setOnClickListener { setLevel(bar.progress + lo + delta) }
+                  }
+
+                  val icon = ImageView(this).apply {
+                      setImageResource(stream.icon)
+                      layoutParams = LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(10) }
+                  }
+
+                  val card = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(dp(16), dp(8), dp(16), dp(8))
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#C0CA33"))
+                          cornerRadius = dp(28).toFloat()
+                      }
+                      elevation = dp(8).toFloat()
+                      isClickable = true
+                      addView(icon)
+                      addView(roundButton("−", -1))
+                      addView(bar, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                      addView(roundButton("+", 1))
+                      addView(value)
+                  }
+
+                  val root = FrameLayout(this).apply {
+                      setOnClickListener { finish() }
+                      addView(
+                          card,
+                          FrameLayout.LayoutParams(dp(320), dp(56), Gravity.CENTER)
+                      )
+                  }
+
+                  show()
+                  setContentView(root)
+                  handler.postDelayed(closeTask, AUTO_CLOSE_MS)
+              }
+
+              override fun onDestroy() {
+                  handler.removeCallbacks(closeTask)
+                  super.onDestroy()
+              }
+          }
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/java/com/example/volumewidget/MainActivity.kt)"
+          cat > vwproj/app/src/main/java/com/example/volumewidget/MainActivity.kt <<'VWEOF'
+          package com.example.volumewidget
+
+          import android.app.Activity
+          import android.os.Bundle
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.SeekBar
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(48, 64, 48, 48)
+                  }
+                  VolumeStreams.all.forEach { s ->
+                      val lo = VolumeStreams.min(this, s)
+                      root.addView(TextView(this).apply { text = s.label; textSize = 18f; setPadding(0, 32, 0, 0) })
+                      root.addView(SeekBar(this).apply {
+                          max = VolumeStreams.max(this@MainActivity, s) - lo
+                          progress = VolumeStreams.get(this@MainActivity, s) - lo
+                          setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                              override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
+                                  if (fromUser) VolumeStreams.set(this@MainActivity, s, p + lo)
+                              }
+                              override fun onStartTrackingTouch(sb: SeekBar) {}
+                              override fun onStopTrackingTouch(sb: SeekBar) {}
+                          })
+                      })
+                  }
+                  setContentView(ScrollView(this).apply { addView(root) })
+              }
+          }
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/res/drawable/ic_music.xml)"
+          cat > vwproj/app/src/main/res/drawable/ic_music.xml <<'VWEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp"
+              android:height="24dp"
+              android:viewportWidth="24"
+              android:viewportHeight="24">
+              <path
+                  android:fillColor="#00897B"
+                  android:pathData="M12,3v10.55c-0.59,-0.34 -1.27,-0.55 -2,-0.55 -2.21,0 -4,1.79 -4,4s1.79,4 4,4 4,-1.79 4,-4V7h4V3h-6z" />
+          </vector>
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/res/drawable/ic_ring.xml)"
+          cat > vwproj/app/src/main/res/drawable/ic_ring.xml <<'VWEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp"
+              android:height="24dp"
+              android:viewportWidth="24"
+              android:viewportHeight="24">
+              <path
+                  android:fillColor="#00897B"
+                  android:pathData="M23.71,16.67C20.66,13.78 16.54,12 12,12 7.46,12 3.34,13.78 0.29,16.67c-0.18,0.18 -0.29,0.43 -0.29,0.71 0,0.28 0.11,0.53 0.29,0.71l2.48,2.48c0.18,0.18 0.43,0.29 0.71,0.29 0.27,0 0.52,-0.11 0.7,-0.28 0.79,-0.74 1.69,-1.36 2.66,-1.85 0.33,-0.16 0.56,-0.5 0.56,-0.9v-3.1c1.45,-0.48 3,-0.73 4.6,-0.73s3.15,0.25 4.6,0.72v3.1c0,0.39 0.23,0.74 0.56,0.9 0.98,0.49 1.87,1.12 2.66,1.85 0.18,0.18 0.43,0.28 0.7,0.28 0.28,0 0.53,-0.11 0.71,-0.29l2.48,-2.48c0.18,-0.18 0.29,-0.43 0.29,-0.71 0,-0.27 -0.11,-0.52 -0.29,-0.7zM21.16,6.26l-1.41,-1.41 -3.56,3.55 1.41,1.41s3.45,-3.52 3.56,-3.55zM13,2h-2v5h2V2zM6.4,9.81L7.81,8.4 4.26,4.84 2.84,6.26c0.11,0.03 3.56,3.55 3.56,3.55z" />
+          </vector>
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/res/drawable/ic_bell.xml)"
+          cat > vwproj/app/src/main/res/drawable/ic_bell.xml <<'VWEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp"
+              android:height="24dp"
+              android:viewportWidth="24"
+              android:viewportHeight="24">
+              <path
+                  android:fillColor="#00897B"
+                  android:pathData="M12,22c1.1,0 2,-0.9 2,-2h-4c0,1.1 0.89,2 2,2zM18,16v-5c0,-3.07 -1.64,-5.64 -4.5,-6.32V4c0,-0.83 -0.67,-1.5 -1.5,-1.5s-1.5,0.67 -1.5,1.5v0.68C7.63,5.36 6,7.92 6,11v5l-2,2v1h16v-1l-2,-2z" />
+          </vector>
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/res/drawable/ic_system.xml)"
+          cat > vwproj/app/src/main/res/drawable/ic_system.xml <<'VWEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp"
+              android:height="24dp"
+              android:viewportWidth="24"
+              android:viewportHeight="24">
+              <path
+                  android:fillColor="#00897B"
+                  android:fillType="evenOdd"
+                  android:pathData="M3,18a9,9 0 0 1 18,0z M8.5,14.2a1,1 0 1 0 2,0a1,1 0 1 0 -2,0z M13.5,14.2a1,1 0 1 0 2,0a1,1 0 1 0 -2,0z" />
+              <path
+                  android:strokeColor="#00897B"
+                  android:strokeWidth="1.6"
+                  android:strokeLineCap="round"
+                  android:pathData="M7,9L5.2,6M17,9L18.8,6" />
+          </vector>
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/res/drawable/ic_call.xml)"
+          cat > vwproj/app/src/main/res/drawable/ic_call.xml <<'VWEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp"
+              android:height="24dp"
+              android:viewportWidth="24"
+              android:viewportHeight="24">
+              <path
+                  android:fillColor="#00897B"
+                  android:pathData="M6.62,10.79c1.44,2.83 3.76,5.14 6.59,6.59l2.2,-2.2c0.27,-0.27 0.67,-0.36 1.02,-0.24 1.12,0.37 2.33,0.57 3.57,0.57 0.55,0 1,0.45 1,1V20c0,0.55 -0.45,1 -1,1 -9.39,0 -17,-7.61 -17,-17 0,-0.55 0.45,-1 1,-1h3.5c0.55,0 1,0.45 1,1 0,1.25 0.2,2.45 0.57,3.57 0.11,0.35 0.03,0.74 -0.25,1.02l-2.2,2.2z" />
+          </vector>
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/res/drawable/ic_alarm.xml)"
+          cat > vwproj/app/src/main/res/drawable/ic_alarm.xml <<'VWEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp"
+              android:height="24dp"
+              android:viewportWidth="24"
+              android:viewportHeight="24">
+              <path
+                  android:fillColor="#00897B"
+                  android:fillType="evenOdd"
+                  android:pathData="M22,5.72l-4.6,-3.86 -1.29,1.53 4.6,3.86L22,5.72zM7.88,3.39L6.6,1.86 2,5.71l1.29,1.53 4.59,-3.85zM12,4c-4.97,0 -9,4.03 -9,9s4.02,9 9,9c4.97,0 9,-4.03 9,-9s-4.03,-9 -9,-9zM12.5,8H11v6l4.75,2.85 0.75,-1.23 -4,-2.37V8z" />
+          </vector>
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/res/drawable/widget_bg.xml)"
+          cat > vwproj/app/src/main/res/drawable/widget_bg.xml <<'VWEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android"
+              android:shape="rectangle">
+              <solid android:color="#C0CA33" />
+              <corners android:radius="28dp" />
+          </shape>
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/res/layout/widget_volume.xml)"
+          cat > vwproj/app/src/main/res/layout/widget_volume.xml <<'VWEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:background="@drawable/widget_bg"
+              android:gravity="center_vertical"
+              android:orientation="horizontal"
+              android:paddingHorizontal="8dp">
+              <ImageView
+                  android:id="@+id/icon0"
+                  android:layout_width="0dp"
+                  android:layout_height="44dp"
+                  android:layout_weight="1"
+                  android:contentDescription="মিডিয়া ভলিউম"
+                  android:padding="10dp"
+                  android:src="@drawable/ic_music" />
+              <ImageView
+                  android:id="@+id/icon1"
+                  android:layout_width="0dp"
+                  android:layout_height="44dp"
+                  android:layout_weight="1"
+                  android:contentDescription="রিংটোন ভলিউম"
+                  android:padding="10dp"
+                  android:src="@drawable/ic_ring" />
+              <ImageView
+                  android:id="@+id/icon2"
+                  android:layout_width="0dp"
+                  android:layout_height="44dp"
+                  android:layout_weight="1"
+                  android:contentDescription="নোটিফিকেশন ভলিউম"
+                  android:padding="10dp"
+                  android:src="@drawable/ic_bell" />
+              <ImageView
+                  android:id="@+id/icon3"
+                  android:layout_width="0dp"
+                  android:layout_height="44dp"
+                  android:layout_weight="1"
+                  android:contentDescription="সিস্টেম ভলিউম"
+                  android:padding="10dp"
+                  android:src="@drawable/ic_system" />
+              <ImageView
+                  android:id="@+id/icon4"
+                  android:layout_width="0dp"
+                  android:layout_height="44dp"
+                  android:layout_weight="1"
+                  android:contentDescription="কল ভলিউম"
+                  android:padding="10dp"
+                  android:src="@drawable/ic_call" />
+              <ImageView
+                  android:id="@+id/icon5"
+                  android:layout_width="0dp"
+                  android:layout_height="44dp"
+                  android:layout_weight="1"
+                  android:contentDescription="অ্যালার্ম ভলিউম"
+                  android:padding="10dp"
+                  android:src="@drawable/ic_alarm" />
+          </LinearLayout>
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/res/xml/volume_widget_info.xml)"
+          cat > vwproj/app/src/main/res/xml/volume_widget_info.xml <<'VWEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+              android:minWidth="250dp"
+              android:minHeight="40dp"
+              android:targetCellWidth="4"
+              android:targetCellHeight="1"
+              android:updatePeriodMillis="0"
+              android:initialLayout="@layout/widget_volume"
+              android:resizeMode="horizontal"
+              android:widgetCategory="home_screen" />
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/res/values/popup_theme.xml)"
+          cat > vwproj/app/src/main/res/values/popup_theme.xml <<'VWEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.VolumePopup" parent="android:Theme.Material.Light.NoActionBar">
+                  <item name="android:windowBackground">@android:color/transparent</item>
+                  <item name="android:windowIsTranslucent">true</item>
+                  <item name="android:windowNoTitle">true</item>
+                  <item name="android:windowAnimationStyle">@android:style/Animation.Dialog</item>
+              </style>
+          </resources>
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/res/values/strings.xml)"
+          cat > vwproj/app/src/main/res/values/strings.xml <<'VWEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Volume Widget</string>
+          </resources>
+          VWEOF
+          mkdir -p "vwproj/$(dirname settings.gradle.kts)"
+          cat > vwproj/settings.gradle.kts <<'VWEOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "VolumeWidget"
+          include(":app")
+          VWEOF
+          mkdir -p "vwproj/$(dirname build.gradle.kts)"
+          cat > vwproj/build.gradle.kts <<'VWEOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          VWEOF
+          mkdir -p "vwproj/$(dirname gradle.properties)"
+          cat > vwproj/gradle.properties <<'VWEOF'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.useAndroidX=false
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/build.gradle.kts)"
+          cat > vwproj/app/build.gradle.kts <<'VWEOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.example.volumewidget"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.example.volumewidget"
+                  minSdk = 28
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          VWEOF
+          mkdir -p "vwproj/$(dirname app/src/main/AndroidManifest.xml)"
+          cat > vwproj/app/src/main/AndroidManifest.xml <<'VWEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <application
+                  android:allowBackup="true"
+                  android:label="@string/app_name"
+                  android:theme="@android:style/Theme.Material.Light.DarkActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <receiver
+                      android:name=".VolumeWidgetProvider"
+                      android:exported="false">
+                      <intent-filter>
+                          <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.appwidget.provider"
+                          android:resource="@xml/volume_widget_info" />
+                  </receiver>
+
+                  <activity
+                      android:name=".VolumePopupActivity"
+                      android:exported="false"
+                      android:excludeFromRecents="true"
+                      android:taskAffinity=""
+                      android:theme="@style/Theme.VolumePopup" />
+              </application>
+          </manifest>
+          VWEOF
+
+      - name: Build debug APK
+        working-directory: vwproj
+        run: gradle assembleDebug --no-daemon
+
+      - name: Save APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VolumeWidget-apk
+          path: vwproj/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish APK in Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "v${GITHUB_RUN_NUMBER}" vwproj/app/build/outputs/apk/debug/app-debug.apk --title "Volume Widget v${GITHUB_RUN_NUMBER}" --notes "Debug APK"
