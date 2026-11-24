@@ -351,7 +351,7 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <shape xmlns:android="http://schemas.android.com/apk/res/android"
               android:shape="rectangle">
-              <solid android:color="#00000000" />
+              <solid android:color="#80C0CA33" />
               <corners android:radius="28dp" />
           </shape>
           VWEOF
@@ -368,7 +368,7 @@ jobs:
               <ImageView
                   android:id="@+id/icon0"
                   android:layout_width="0dp"
-                  android:layout_height="44dp"
+                  android:layout_height="50dp"
                   android:layout_weight="1"
                   android:contentDescription="মিডিয়া ভলিউম"
                   android:padding="10dp"
@@ -376,7 +376,7 @@ jobs:
               <ImageView
                   android:id="@+id/icon1"
                   android:layout_width="0dp"
-                  android:layout_height="44dp"
+                  android:layout_height="50dp"
                   android:layout_weight="1"
                   android:contentDescription="রিংটোন ভলিউম"
                   android:padding="10dp"
@@ -384,7 +384,7 @@ jobs:
               <ImageView
                   android:id="@+id/icon2"
                   android:layout_width="0dp"
-                  android:layout_height="44dp"
+                  android:layout_height="50dp"
                   android:layout_weight="1"
                   android:contentDescription="নোটিফিকেশন ভলিউম"
                   android:padding="10dp"
@@ -392,7 +392,7 @@ jobs:
               <ImageView
                   android:id="@+id/icon3"
                   android:layout_width="0dp"
-                  android:layout_height="44dp"
+                  android:layout_height="50dp"
                   android:layout_weight="1"
                   android:contentDescription="সিস্টেম ভলিউম"
                   android:padding="10dp"
@@ -400,7 +400,7 @@ jobs:
               <ImageView
                   android:id="@+id/icon4"
                   android:layout_width="0dp"
-                  android:layout_height="44dp"
+                  android:layout_height="50dp"
                   android:layout_weight="1"
                   android:contentDescription="কল ভলিউম"
                   android:padding="10dp"
@@ -408,7 +408,7 @@ jobs:
               <ImageView
                   android:id="@+id/icon5"
                   android:layout_width="0dp"
-                  android:layout_height="44dp"
+                  android:layout_height="50dp"
                   android:layout_weight="1"
                   android:contentDescription="অ্যালার্ম ভলিউম"
                   android:padding="10dp"
